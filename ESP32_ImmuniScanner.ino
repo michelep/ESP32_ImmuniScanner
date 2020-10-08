@@ -1,7 +1,12 @@
 /*
- * BLE Sniffer
+ * ** Immuni Scanner **
  * 
- * Burn using TTGO-LoRa32-OLED V1 profile
+ * Far to be perfect, just listen for Immuni beacons...
+ * 
+ * I have been used a TTGO ESP32 board with 18650 LiPo battery slot and OLED 0,96" display - https://it.aliexpress.com/item/1000007779002.html
+ * 
+ * Burn using TTGO-LoRa32-OLED V1 profile - 
+ *
  */
 
 #define __DEBUG__
@@ -16,8 +21,7 @@
 // Firmware data
 const char BUILD[] = __DATE__ " " __TIME__;
 #define FW_NAME         "immuniscanner"
-#define FW_VERSION      "0.0.1"
-
+#define FW_VERSION      "0.0.2"
 
 // ************************************
 // DEBUG_PRINT() and DEBUG_PRINTLN()
@@ -36,7 +40,17 @@ void DEBUG_PRINTLN(String message) {
 #endif
 }
 
+//
+#define TOUCH_UP 33
+#define TOUCH_UP_TRIGGER 25
+#define TOUCH_DOWN 27
+#define TOUCH_DOWN_TRIGGER 50
+
+// *******************************
 // OLED LCD display
+//
+// https://github.com/LilyGO/ESP32-OLED0.96-ssd1306
+// *******************************
 #define I2C_SCL 4
 #define I2C_SDA 5
 #include <Wire.h>  
@@ -44,10 +58,11 @@ void DEBUG_PRINTLN(String message) {
 
 SSD1306 display(0x3c, I2C_SDA, I2C_SCL);
 
-//
+// *****************************
 // BLE
 //
-
+// https://github.com/nkolban/esp32-snippets/tree/master/BLE/scanner
+// *****************************
 #include <BLEDevice.h>
 #include <BLEUtils.h>
 #include <BLEScan.h>
@@ -60,37 +75,58 @@ uint8_t immuniFound=0;
 
 bool bleIsScanning=false;
 
-typedef struct {
-  char address[18];
-  int rssi;
-} _BTDevice;
+// ****************************
+// LinkedList
+//
+// https://github.com/ivanseidel/LinkedList
+// ****************************
+#include <LinkedList.h>
 
-_BTDevice btDevice[20];
-uint8_t btIdx=0;
+#define MAX_AGE 2 // How many search cycles wait before discard a device?
+
+class BTDevice {
+  public:
+    char address[18];
+    int rssi;
+    uint8_t age;
+};
+
+LinkedList<BTDevice *> devicesList = LinkedList<BTDevice *>();
 
 bool addDevice(char *address, int rssi) {
-  Serial.print("[!] ");
-  Serial.println(address);
-  for(uint8_t i;i<btIdx;i++) {
-    Serial.print("[=] ");
-    Serial.println(btDevice[i].address);
-    if(strcmp(btDevice[i].address,address)==0) {
+  for(uint8_t i;i<devicesList.size();i++) {
+    BTDevice *tmpDev = devicesList.get(i);
+    if(strncmp(tmpDev->address,address,18)==0) {
+      // Device is already present, but update rssi and age
+      tmpDev->rssi=rssi;
+      tmpDev->age=MAX_AGE;
+      DEBUG_PRINTLN(F("[!] UPDATED"));
       return false;
     }
   }
-  strncpy(btDevice[btIdx].address,address,18);
-  btDevice[btIdx].rssi=rssi;
-  btIdx++;
-  if(btIdx>20) {
-    btIdx=0;
-  }
+  BTDevice *tmpDev = new BTDevice();
+  strncpy(tmpDev->address,address,18);
+  tmpDev->rssi = rssi;
+  tmpDev->age = MAX_AGE;
+  devicesList.add(tmpDev);
+  DEBUG_PRINTLN(F("[+] ADDED!"));
   immuniFound++;
   return true;
 }
 
-void printDevices() {
-
+void cycleDevices() {
+  for(uint8_t i;i<devicesList.size();i++) {
+    BTDevice *tmpDev = devicesList.get(i);
+    tmpDev->age--;
+    if(1 > tmpDev->age) {
+      // Device is out of age: discard
+      devicesList.remove(i);
+      delete(tmpDev);
+      DEBUG_PRINTLN(F("[#] DELETED"));
+    }
+  }
 }
+
 
 // https://blog.google/documents/58/Contact_Tracing_-_Bluetooth_Specification_v1.1_RYGZbKW.pdf
 const char* uuid = "0000fd6f-0000-1000-8000-00805f9b34fb";
@@ -131,6 +167,7 @@ void bleTask(void *pvParameters) {
       pBLEScan->setActiveScan(true);
       BLEScanResults foundDevices = pBLEScan->start(scanTime);
       bleIsScanning=false;
+      cycleDevices();
     } else {
       delay(5000);
       BLEDevice::init("");
@@ -174,25 +211,72 @@ void setup() {
 }
 
 unsigned long last;
-uint8_t progress=0, found=0;
+uint8_t progress=0, display_page=0;
 
 void loop() {
+  int ts_val;
+  uint8_t dy=4;
+  char buff[16];
+  
   if((millis() - last) > 1100) {  
     display.clear();  
     display.setFont(ArialMT_Plain_10);
-    display.drawHorizontalLine(0, 0, DISPLAY_WIDTH);
+    display.drawHorizontalLine(0, 1, (DISPLAY_WIDTH/3)*(display_page+1));
+    display.drawVerticalLine((DISPLAY_WIDTH/3)*(display_page+1), 0, 3);
+
+    // Display page contents
+    switch(display_page) {
+      case 0: // Main page
+        // Just show how many "Immuni" found
+        display.drawString(26,25,"Found       Immuni");
+
+        display.setFont(ArialMT_Plain_24);
+        display.drawString(61,17, String(immuniFound));
+        break;
+      case 1:
+        // Last devices found
+        for(uint8_t i;i<devicesList.size();i++) {
+          BTDevice *tmpDev = devicesList.get(i);
+          display.drawString(1,dy,tmpDev->address);
+          dy+=11;
+        }
+        break;
+      case 2:
+        // System info
+        sprintf(buff,"FreeHEAP: %d",ESP.getFreeHeap());
+        display.drawString(1,4,buff);
+        sprintf(buff,"Devices: %d",devicesList.size());
+        display.drawString(1,15,buff);
+        sprintf(buff,"Uptime: %d",millis()/1000);
+        display.drawString(1,26,buff);
+        break;
+    }
+    
     display.drawProgressBar(10, DISPLAY_HEIGHT-12, DISPLAY_WIDTH-20, 10, progress);
 
     if(bleIsScanning) {
       progress+=10;
       if(progress > 100) { progress=0; }
     }
-    display.drawString(26,25,"Found       Immuni");
-
-    display.setFont(ArialMT_Plain_24);
-    display.drawString(61,17, String(immuniFound));
     
-    display.display();
+    display.display();    
+
+    // <--- Touch button 
+    ts_val = touchRead(TOUCH_UP);
+    if(ts_val < TOUCH_UP_TRIGGER) {
+      display_page++;
+      if(display_page > 2) display_page=0;
+    }
+    ts_val = touchRead(TOUCH_DOWN);
+    if(ts_val < TOUCH_DOWN_TRIGGER) {
+      if(display_page > 0) {
+        display_page--;
+      } else {
+        display_page=2;
+      }
+    }
+
+    // --->
     last = millis();    
   }
   delay(10);
