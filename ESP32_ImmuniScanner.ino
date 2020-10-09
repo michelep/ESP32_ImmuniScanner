@@ -21,7 +21,7 @@
 // Firmware data
 const char BUILD[] = __DATE__ " " __TIME__;
 #define FW_NAME         "immuniscanner"
-#define FW_VERSION      "0.0.2"
+#define FW_VERSION      "0.0.3"
 
 // ************************************
 // DEBUG_PRINT() and DEBUG_PRINTLN()
@@ -71,8 +71,6 @@ SSD1306 display(0x3c, I2C_SDA, I2C_SCL);
 
 int scanTime = 30; //In seconds
 
-uint8_t immuniFound=0;
-
 bool bleIsScanning=false;
 
 // ****************************
@@ -94,7 +92,7 @@ class BTDevice {
 LinkedList<BTDevice *> devicesList = LinkedList<BTDevice *>();
 
 bool addDevice(char *address, int rssi) {
-  for(uint8_t i;i<devicesList.size();i++) {
+  for(uint8_t i=0;i<devicesList.size();i++) {
     BTDevice *tmpDev = devicesList.get(i);
     if(strncmp(tmpDev->address,address,18)==0) {
       // Device is already present, but update rssi and age
@@ -110,12 +108,12 @@ bool addDevice(char *address, int rssi) {
   tmpDev->age = MAX_AGE;
   devicesList.add(tmpDev);
   DEBUG_PRINTLN(F("[+] ADDED!"));
-  immuniFound++;
   return true;
 }
 
 void cycleDevices() {
-  for(uint8_t i;i<devicesList.size();i++) {
+  if(1 > devicesList.size()) return;
+  for(uint8_t i=0;i<devicesList.size();i++) {
     BTDevice *tmpDev = devicesList.get(i);
     tmpDev->age--;
     if(1 > tmpDev->age) {
@@ -136,15 +134,19 @@ class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
         if(advertisedDevice.haveServiceUUID()){
             if(strncmp(advertisedDevice.getServiceUUID().toString().c_str(),uuid, 36) == 0){
                 int rssi = advertisedDevice.getRSSI();
-                char address[18];             
+                char temp[18];             
                 DEBUG_PRINTLN(F("---------------------------"));
                 DEBUG_PRINT(F("RSSI: "));
                 DEBUG_PRINTLN(String(rssi));
+                float est_distance = 10 ^ ((-69 - (rssi))/(10 * 2));
+                dtostrf(est_distance, 5,3, temp);
+                DEBUG_PRINT(F("DISTANCE (mt): "));
+                DEBUG_PRINTLN(String(temp));
                 DEBUG_PRINT(F("ADDR: "));
-                strncpy(address,advertisedDevice.getAddress().toString().c_str(),18);
-                DEBUG_PRINTLN(String(address));
+                strncpy(temp,advertisedDevice.getAddress().toString().c_str(),18);
+                DEBUG_PRINTLN(String(temp));
                 // Immuni found. Check and add if is a new device.
-                addDevice(address,rssi);
+                addDevice(temp,rssi);
             }
         }
     }
@@ -231,7 +233,7 @@ void loop() {
         display.drawString(26,25,"Found       Immuni");
 
         display.setFont(ArialMT_Plain_24);
-        display.drawString(61,17, String(immuniFound));
+        display.drawString(61,17, String(devicesList.size()));
         break;
       case 1:
         // Last devices found
@@ -261,7 +263,8 @@ void loop() {
     
     display.display();    
 
-    // <--- Touch button 
+    // <--- Touch button
+    /*
     ts_val = touchRead(TOUCH_UP);
     if(ts_val < TOUCH_UP_TRIGGER) {
       display_page++;
@@ -275,7 +278,7 @@ void loop() {
         display_page=2;
       }
     }
-
+    */
     // --->
     last = millis();    
   }
