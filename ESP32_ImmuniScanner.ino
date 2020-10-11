@@ -7,9 +7,29 @@
  * 
  * Burn using TTGO-LoRa32-OLED V1 profile - 
  *
+ * *** CHANGELOG ***
+ * 
+ * 0.0.1 
+ * - First release
+ * 
+ * 0.0.2 
+ * - Some improvements, like double-linked list for detected devices.
+ * 
+ * 0.0.3 
+ * - Multiple page with much infos to display
+ * 
+ * 0.0.4
+ * - GPS support
+ * - MiniSD support for data logging
+ * - Touch button (#TODO)
  */
 
 #define __DEBUG__
+
+// Firmware data
+const char BUILD[] = __DATE__ " " __TIME__;
+#define FW_NAME         "immuniscanner"
+#define FW_VERSION      "0.0.4"
 
 #include <WiFi.h>
 #include <ESPmDNS.h>
@@ -18,11 +38,7 @@
 #include "logo.h"
 
 #include "time.h"
-// Firmware data
-const char BUILD[] = __DATE__ " " __TIME__;
-#define FW_NAME         "immuniscanner"
-#define FW_VERSION      "0.0.3"
-
+#include <TimeLib.h>
 // ************************************
 // DEBUG_PRINT() and DEBUG_PRINTLN()
 //
@@ -40,11 +56,115 @@ void DEBUG_PRINTLN(String message) {
 #endif
 }
 
+// *******************************
+// GPS module support, by TinyGPS++
 //
-#define TOUCH_UP 33
-#define TOUCH_UP_TRIGGER 25
-#define TOUCH_DOWN 27
-#define TOUCH_DOWN_TRIGGER 50
+// https://github.com/mikalhart/TinyGPSPlus
+// 
+// ESP32 Serial ports:
+// 1) RX1:GPIO9  TX1:GPIO10
+// 2) RX2:GPIO16 TX2:GPIO17
+// *******************************
+#define GPS // <-- Comment to DISABLE
+// 
+#ifdef GPS
+#include <TinyGPS++.h>
+#define GPS_RX 16
+#define GPS_TX 17
+// The TinyGPS++ object
+TinyGPSPlus gps;
+
+String gpsLat;
+String gpsLng;
+#endif
+
+// *******************************
+// SDCard reader support, for data logging 
+// 
+//
+// ******************************* 
+#define SDCARD // <-- Comment to DISABLE
+// 
+#ifdef SDCARD
+#define SD_MISO 19
+#define SD_MOSI 23
+#define SD_SCK 18
+#define SD_CS 5
+#include "FS.h"
+#include "SD.h"
+#include <SPI.h>
+
+// *********************
+// SD cad procedures
+// 
+// Initialize, write and append to SD card file
+// *********************
+
+bool sdEnabled=false;
+
+void writeFile(const char * path, const char * message) {
+  if(!sdEnabled) return;
+
+  Serial.printf("Writing file: %s\n", path);
+
+  File file = SD.open(path, FILE_WRITE);
+  if(!file) {
+    Serial.println("Failed to open file for writing");
+    return;
+  }
+  if(file.print(message)) {
+    Serial.println("File written");
+  } else {
+    Serial.println("Write failed");
+  }
+  file.close();
+}
+
+void appendFile(const char * path, const char * message) {
+  if(!sdEnabled) return;
+  
+  Serial.printf("Appending to file: %s\n", path);
+
+  File file = SD.open(path, FILE_APPEND);
+  if(!file) {
+    Serial.println("Failed to open file for appending");
+    return;
+  }
+  if(file.print(message)) {
+    Serial.println("Message appended");
+  } else {
+    Serial.println("Append failed");
+  }
+  file.close();
+}
+
+void initSD() {
+  // Initialize SD card, if present
+  SD.begin(SD_CS);  
+  if(!SD.begin(SD_CS)) {
+    DEBUG_PRINTLN(F("[!] Card Mount Failed"));
+    return;
+  }
+  uint8_t cardType = SD.cardType();
+  if(cardType == CARD_NONE) {
+    DEBUG_PRINTLN(F("[!] No SD card attached"));
+    return;
+  }
+  if (!SD.begin(SD_CS)) {
+    DEBUG_PRINTLN(F("[!] SD card initialization failed!"));
+    return; 
+  }
+  sdEnabled=true;
+
+  File file = SD.open("/data.csv");
+  if(!file) {
+    DEBUG_PRINTLN(F("[!] Create data.csv file"));
+    writeFile("/data.csv", "Address,RSSI,Timestamp,Lat-Lng\r\n");
+  } else {
+    file.close();  
+  }
+}
+#endif
 
 // *******************************
 // OLED LCD display
@@ -147,6 +267,11 @@ class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
                 DEBUG_PRINTLN(String(temp));
                 // Immuni found. Check and add if is a new device.
                 addDevice(temp,rssi);
+#ifdef SDCARD
+/*                char buffer[128];
+                sprintf(buffer,"%s,%d,%d%d%d%d%d%d,%sx%s\r\n",temp,rssi,now(),gpsLat,gpsLng);
+                appendFile("/data.csv", buffer); */
+#endif
             }
         }
     }
@@ -177,6 +302,10 @@ void bleTask(void *pvParameters) {
   }
 }
 
+// *********************
+// SETUP()
+//
+// *********************
 void setup() {
   Serial.begin(115200);
   Serial.setDebugOutput(true);
@@ -196,6 +325,17 @@ void setup() {
 
   // write the buffer to the display
   display.display();
+
+#ifdef GPS
+  DEBUG_PRINTLN(F("[!] Initializing GPS..."));
+  // Initialize serial port for GPS, if present
+  Serial2.begin(9600, SERIAL_8N1, GPS_RX, GPS_TX);
+#endif
+
+#ifdef SDCARD
+  DEBUG_PRINTLN(F("[!] Initializing SD..."));
+  initSD();
+#endif
 
   // Wait 2 secs
   delay(2000);
@@ -230,10 +370,10 @@ void loop() {
     switch(display_page) {
       case 0: // Main page
         // Just show how many "Immuni" found
-        display.drawString(26,25,"Found       Immuni");
+        display.drawString(22,20,"Found         Immuni");
 
         display.setFont(ArialMT_Plain_24);
-        display.drawString(61,17, String(devicesList.size()));
+        display.drawString(59,12, String(devicesList.size()));
         break;
       case 1:
         // Last devices found
@@ -261,26 +401,20 @@ void loop() {
       if(progress > 100) { progress=0; }
     }
     
-    display.display();    
-
-    // <--- Touch button
-    /*
-    ts_val = touchRead(TOUCH_UP);
-    if(ts_val < TOUCH_UP_TRIGGER) {
-      display_page++;
-      if(display_page > 2) display_page=0;
-    }
-    ts_val = touchRead(TOUCH_DOWN);
-    if(ts_val < TOUCH_DOWN_TRIGGER) {
-      if(display_page > 0) {
-        display_page--;
-      } else {
-        display_page=2;
-      }
-    }
-    */
-    // --->
+    display.display();
     last = millis();    
   }
+
+#ifdef GPS
+  while(Serial2.available() > 0) {
+    gps.encode(Serial2.read());
+    if (gps.location.isValid()) {
+      gpsLat = String(gps.location.lat(), 6);
+      gpsLng = String(gps.location.lng(), 6);
+      Serial.print("LAT="); Serial.print(gpsLat);
+      Serial.print("LNG="); Serial.println(gpsLng);
+    }
+  }
+#endif
   delay(10);
 }
